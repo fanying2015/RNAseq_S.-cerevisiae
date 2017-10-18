@@ -1,0 +1,248 @@
+---
+title: "RNaseq"
+author: "Fanying Tang"
+date: "August 23, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+folder <- "/Users/fanyingtang/Documents/RNAseq/"
+
+readcounts <- read.table(paste0(folder, "featureCounts_result.txt"), header = TRUE)
+
+head(readcounts)
+
+?DESeqDataSetFromMatrix
+```
+
+```{r}
+# prepare for the count matrix
+row.names(readcounts) <- readcounts$Geneid
+readcounts <- readcounts[, -c(1:6)] # remove the first 6 columns
+head(readcounts)
+
+orig_names <- names(readcounts)
+#method 1:
+names(readcounts) <- c("SNF2_1", "SNF2_2", "SNF2_3", "SNF2_4", "SNF2_5", "WT_1", "WT_2", "WT_3", "WT_4","WT_5")
+head(readcounts)
+
+#method 2:
+#names(readcounts) <- c( paste("SNF2", c(1:5), sep = "_"),
+#         paste("WT", c(1:5), sep = "_"))
+#head(readcounts)
+
+
+#method 3:
+# names(readcounts) <- gsub(".*(WT1SNF2)(_[0-9]+)*", "\\1\\2", orig_names)
+```
+
+```{r}
+# generate the dataframe for sample information
+# method 1
+sample_info <- data.frame(condition = gsub("_[0-9]+", "", names(readcounts)), row.names = names(readcounts)) # find the _[0-9], replace them with nothing
+head(sample_info)
+
+# method 2
+# c(rep("SNP2", 5), rep("WT", 5))
+```
+```{r}
+DESeq.ds <- DESeqDataSetFromMatrix(countData = readcounts,
+                                   colData = sample_info,
+                                   design = ~ condition)
+DESeq.ds
+
+colData(DESeq.ds)
+design(DESeq.ds)
+# counts(DESeq.ds) %>% head
+head(counts(DESeq.ds))
+
+
+# install.pacakges("magrittr")
+# counts(DESeq.ds) %>% str
+counts(DESeq.ds) %>% colSums %>% head
+sum(counts(DESeq.ds)[,1])
+```
+
+```{r}
+colSums(counts(DESeq.ds)) # some have more reads, some have fewer reads; some genes don't have any reads
+DESeq.ds <- DESeq.ds[ rowSums(counts(DESeq.ds)) > 0, ]
+counts(DESeq.ds) %>% str # it reduces counts and assays
+assay(DESeq.ds) %>% str
+dim(counts(DESeq.ds)) #6411 genes, 10 samples
+#DE already filter the genes with some standard pipelines
+```
+
+```{r}
+# DESeq already finishes
+# normalize the libarary size
+DESeq.ds <- estimateSizeFactors(DESeq.ds) # to normalize, use medium level of expressed genes
+sizeFactors((DESeq.ds)) # check the size factor, that will be used to correct for individual gene counts
+plot(sizeFactors(DESeq.ds), colSums(counts(DESeq.ds))) # not perfect match. Samples with bigger size factor are the ones with the highest number of reads
+counts(DESeq.ds, normalized = TRUE) %>% head # check the relative expression level of each gene across different samples (normalized counts)
+counts(DESeq.ds) %>% head # show the raw counts
+```
+```{r}
+par(mfrow=c(1,2))
+counts.sf_normalized <- counts(DESeq.ds, normalized = TRUE) # normalized count matrix
+
+# do the boxplot
+boxplot(counts.sf_normalized, main = "SF normalized")
+boxplot(counts(DESeq.ds), main = "read counts only")
+# only see the outliers. The ranges of values are too big to see the box. Need log transformation
+```
+
+```{r boxplots_logReadCounts, fig.width = 10, figheight = 15}
+log.counts <- log2(counts(DESeq.ds, normalized = FALSE) + 1)
+log.norm.counts <- log2(counts(DESeq.ds, normalized = TRUE) + 1)
+
+par(mfrow=c(2,1))
+boxplot(log.counts, notch = TRUE, main = "Non-normalized read counts\n(log-transformed)", ylab= "read counts")
+boxplot(log.norm.counts , notch = TRUE, main = "Size-factor normalized read counts\n(log-transformed)", ylab = "read counts")
+```
+
+```{r}
+par(mfrow=c(2,1))
+plot(log.norm.counts[,c("WT_1", "WT_2")], cex = .1, main = "WT_1 vs. WT_2")
+plot(log.norm.counts[,c("SNF2_1", "SNF2_2")], cex = .1, main = "WT_1 vs. WT_2")
+
+library(vsn) # mean variance plot
+library(ggplot2)
+msd_plot <- meanSdPlot(log.norm.counts, ranks = FALSE, plot = FALSE) # show the orignal scale
+
+msd_plot$gg + ggtitle("sequencing depth normalized log2(read counts)") + ylab("standard deviation")
+
+#calculate the mean expression and sd for all the genes
+# for low read genes, the sd is much bigger than highly expressed genes. They plot the mean of all genes across all the samples (don't need to do it pairwisely)
+```
+```{r}
+save.image(file = paste0(folder, "featureCountExploration.RDat"))
+```
+Assumptions:
+1. Different samples have similar gloabal gene conditions (eg. apoptosis -- cells dye, global shift in gene expression pattern. Not suitable for standard DE analysis)
+2. The variance you see for every gene across different samples is the same regardless whether the gene is low or high expressed. This is not really true or lowly expressed genes
+```{r}
+load("featureCountExploration.RDat")
+library(DESeq2)
+library(vsn)
+```
+
+```{r VarianceStabilization, fig.width= 15, fig.height= 8}
+DESeq.rlog <- rlog(DESeq.ds, blind = TRUE)
+str(DESeq.rlog) # it's a DESeqTransform object
+```
+
+```{r}
+par(mforw=c(1,2))
+plot(log.norm.counts[, 1:2], cex =.1, main = "size factor and log2-transformed")
+
+plot(assay(DESeq.rlog)[,1],
+     assay(DESeq.rlog)[,2],
+     cex=.1, main = "rlog transformed",
+     xlab = colnames(assay(DESeq.rlog[,1])),
+     ylab = colnames(assay(DESeq.rlog[,2]))
+)
+# the rlog transformed data is better for futher analysis
+rlog.norm.counts <- assay(DESeq.rlog) # assign a value for all transformed values
+```
+
+```{r}
+library(ggplot2)
+msd_plot <- meanSdPlot( assay(DESeq.rlog), ranks= FALSE, plot = FALSE)
+msd_plot$gg + ggtitle("rlog transformation")
+```
+adjust the varaince of all the gene. set bind = true (turn a blind eye all sample information);
+if the condtions are exepected to introduce strong differences in a large proportion of genes set bind = FALSE (the average varicance for all WT sampoles, for all mutatn samples. Don't make genes look more similiar than they shoud(first time, use blind - true))
+
+Day 4. 
+```{r}
+# Do PCA analysis
+# see whether samples variance are similar
+#install PCA package
+#source("https://bioconductor.org/biocLite.R")
+#biocLite("pcaExplorer")
+library(pcaExplorer)
+pcaExplorer(dds = DESeq.ds, rlt = DESeq.rlog)
+
+#install.packages(pkg = "~/Downloads/shiny_1.0.5.tar.gz", repos = NULL)
+```
+
+```{r}
+# make sure the log fold change represent the expected:
+# default setting in DEsq: alphabetical order--need to change the order (WT vs SNF2)
+
+str(DESeq.ds$condtion)
+DESeq.ds$condition <- relevel(DESeq.ds$condtion, ref = "WT")
+# to specific what should be the reference
+str(DESeq.ds$condition)
+```
+
+```{r}
+DESeq.ds <- DESeq(DESeq.ds)
+DESeq.ds <- estimateSizeFactors(DESeq.ds)
+DGE.results <- results(DESeq.ds,
+                      independentfiltering = TRUE,
+                      alpha = 0.05)
+str(DGE.results)
+head(DGE.results)
+summary(DGE.results)
+```
+
+```{r}
+library(magrittr)
+subset(DGE.results, is.na(padj)) %>% dim
+subset(DGE.results, is.na(padj), select = 'baseMean')[,] %>% summary
+
+```
+
+```{r}
+#the mean average plot
+
+plotMA(DGE.results, alpha = 0.05, main = "Test: p.adj.value < 0.05", ylim = c(-4,4))
+# red genes are signficiantly DE expressed.
+# y axis is the log change. for genes that lowely expresed, too lowly expressed to have a power to see signficiant diffent genes.
+# for genes with mean expression, need to have greatede log fold gchanged to be dientified
+
+DGE.results.sorted <- DGE.results[order(DGE.results$padj),]
+head(DGE.results.sorted)
+plotCounts(DESeq.ds, gene="YAL056M", normalized = TRUE)
+plotCounts(DESeq.ds, gene=which.max(DGE.results$padj), main = "Max.p.adj")
+```
+
+```{r}
+# for edgeR
+#org.Hs.eg.db
+#org.Mm.eg.db
+
+# source("https://bioconductor.org/biocLite.R")
+# biocLite("org.Sc.sgd.db")
+# install.packages()
+library(org.Sc.sgd.db)
+keytypes(org.Sc.sgd.db)
+columns(org.Sc.sgd.db)
+
+DGEgenes <- rownames(subset(DGE.results.sorted, padj < 0.05))
+
+anno.DGE <- select(org.Sc.sgd.db, 
+                   keys = DGEgenes, #rownames
+                   keytype = "ORF",
+                   columns = c("SGD", "GENENAME")
+)
+```
+
+```{r}
+# for limma
+```
+
+
+
+
